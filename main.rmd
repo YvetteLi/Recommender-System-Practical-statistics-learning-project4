@@ -1,0 +1,256 @@
+---
+title: "Project 4"
+output: html_document
+date: "2022-12-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## System I 
+
+
+```{r}
+myurl = "https://liangfgithub.github.io/MovieData/"
+ratings = read.csv(paste0(myurl, 'ratings.dat?raw=true'), 
+                   sep = ':',
+                   colClasses = c('integer', 'NULL'), 
+                   header = FALSE)
+
+colnames(ratings) = c('UserID', 'MovieID', 'Rating', 'Timestamp')
+library(dplyr)
+
+
+```
+
+```{r}
+movies = readLines(paste0(myurl, 'movies.dat?raw=true'))
+movies = strsplit(movies, split = "::", fixed = TRUE, useBytes = TRUE)
+movies = matrix(unlist(movies), ncol = 3, byrow = TRUE)
+movies = data.frame(movies, stringsAsFactors = FALSE)
+colnames(movies) = c('MovieID', 'Title', 'Genres')
+movies$MovieID = as.integer(movies$MovieID)
+
+# convert accented characters
+movies$Title[73]
+movies$Title = iconv(movies$Title, "latin1", "UTF-8")
+movies$Title[73]
+
+# extract year
+movies$Year = as.numeric(unlist(
+  lapply(movies$Title, function(x) substr(x, nchar(x)-4, nchar(x)-1))))
+```
+
+
+```{r}
+tmp = ratings %>% 
+  group_by(MovieID) %>% 
+  summarize(ratings_per_movie = n(), ave_ratings = mean(Rating)) %>%
+  inner_join(movies, by = 'MovieID')
+summary(tmp$ratings_per_movie)
+```
+
+
+```{r}
+pop_recom <- tmp %>% 
+  filter(ratings_per_movie > 50) %>%
+  arrange(desc = ratings_per_movie) %>%
+  group_by(Genres) %>%
+  slice(1:50) %>%
+  select(c("Title", "Genres", "ratings_per_movie")) 
+```
+
+```{r}
+library(ggplot2)
+pop_recom  %>% ggplot(aes(ratings_per_movie)) + 
+  geom_bar(fill = "steelblue", width = 1) + coord_cartesian(c(1,1500))
+```
+```{r}
+pop_recom %>% group_by(Genres) %>% summarise(movie_count = n())
+```
+
+
+
+The Popularity based recommendations are built upon the movies that have at least 50 reviews and are ordered from highest score to the lowest, clipping at index of 50. In other words, the recommendation guarantees in each Genre, the model produces at most 50 movies that received at least 50 reviews. 
+
+I chose to do this as popular movies are, by definition, have obtained some exposure to the public and have been rated highly.
+
+### Recommending the most trendy movies
+
+```{r}
+tmp$weight_fact = tmp$Year * tmp$ave_ratings
+
+
+tmp %>% 
+  filter(ratings_per_movie > 50) %>%
+  arrange(desc(Year), desc(weight_fact)) %>%
+  group_by(Genres) %>%
+  slice(1:50) %>%
+  select(c("Title", "Genres", "ratings_per_movie", "Year")) 
+
+```
+
+To recommend the most trendy movies, I used a weight factor that takes the average rating and year into account. The model should output the highest ranking of movie of the most recent years. Similar to previous method, the movies requires at least 50 ratings are received. 
+
+
+
+
+## System II - Collaborative Filtering
+
+### User Based CF
+```{r}
+library(recommenderlab)
+myurl = "https://liangfgithub.github.io/MovieData/"
+ratings = read.csv(paste0(myurl, 'ratings.dat?raw=true'), 
+                   sep = ':',
+                   colClasses = c('integer', 'NULL'), 
+                   header = FALSE)
+colnames(ratings) = c('UserID', 'MovieID', 'Rating', 'Timestamp')
+i = paste0('u', ratings$UserID)
+j = paste0('m', ratings$MovieID)
+x = ratings$Rating
+tmp = data.frame(i, j, x, stringsAsFactors = T)
+Rmat = sparseMatrix(as.integer(tmp$i), as.integer(tmp$j), x = tmp$x)
+rownames(Rmat) = levels(tmp$i)
+colnames(Rmat) = levels(tmp$j)
+Rmat = new('realRatingMatrix', data = Rmat)
+
+```
+
+
+```{r}
+library(proxy)
+train = Rmat[1:500, ]
+test = Rmat[501, ]
+data = as(train, "matrix")
+user.means = rowMeans(data, na.rm = TRUE)
+data = data - user.means
+newdata = as(Rmat[501, ], "matrix")
+newuser.mean = mean(newdata, na.rm = TRUE)
+newdata = newdata - newuser.mean
+sim1 = proxy::simil(data, newdata, method = "cosine")
+sim1 = (1 + sim1)/2
+sim1 = sim1[, 1]
+
+neigh = tail(order(sim1, decreasing = FALSE, na.last=NA), 20)
+tmp_data = data[neigh, ]
+
+numerator   = colSums(tmp_data*sim1[neigh], na.rm=TRUE) 
+denominator = colSums((!is.na(tmp_data))*sim1[neigh])
+
+mypred = numerator/denominator 
+
+mypred = mypred + newuser.mean
+mypred[is.nan(mypred)] <- NA    # abnormal results
+mypred[is.infinite(mypred)] <- NA   # abnormal results
+mypred[!is.na(newdata)]<-NA   # already watched movies
+
+recommender.UBCF <- Recommender(train, method = "UBCF",
+                                parameter = list(normalize = 'center', 
+                                                 method = 'Cosine', 
+                                                 nn = 20))
+
+p.UBCF <- predict(recommender.UBCF, test, type="ratings")
+p.UBCF <- as.numeric(as(p.UBCF, "matrix"))
+
+sum(is.na(p.UBCF) != is.na(mypred)) ### should be zero
+max(abs(p.UBCF - mypred), na.rm = TRUE)  ### should be less than 1e-06 
+```
+
+
+
+### Item Based CF
+
+```{r}
+
+train = Rmat[1:500, ]
+data = as(train, "matrix")
+user.means = rowMeans(data, na.rm = TRUE)
+data = data - user.means
+
+test = Rmat[501, ]
+newdata = as(test, "matrix")
+
+```
+
+```{r}
+item_sim = proxy::simil(data, by_rows = FALSE, method = "cosine")
+item_sim = (1 + item_sim)/2
+item_sim = as.matrix(item_sim)
+```
+
+
+```{r}
+item.sim.top30 = matrix(0, nrow = dim(data)[2], ncol = dim(data)[2])
+# j = paste0('m', ratings$MovieID)
+rownames(item.sim.top30) = colnames(data)
+colnames(item.sim.top30) = colnames(data)
+```
+
+
+```{r zero_fill}
+for (i in 1:dim(item_sim)[1]){
+  neighbor_ids = tail(order(item_sim[i,], decreasing = FALSE, na.last=NA), 30)
+  item.sim.top30[i, neighbor_ids] = item_sim[i,neighbor_ids]
+  antiset = setdiff( 1:dim(data)[2], neighbor_ids)
+  item.sim.top30[i, antiset] = 0
+  item.sim.top30[i,i] = 0
+}
+```
+
+
+```{r gt_alternative, include=FALSE, echo=FALSE, eval=FALSE}
+# u <- normalize(newdata, method = recommender.IBCF@model$normalize)
+sim2 <- recommender.IBCF@model$sim
+u <- as(test, "dgCMatrix")
+
+## predict all ratings (average similarity)
+#ratings <- tcrossprod(sim,u)
+ratings <-
+  #t(as(tcrossprod(sim, u) / tcrossprod(sim != 0, u != 0), "matrix"))
+  t(as(tcrossprod(sim2, u), "matrix") / as(tcrossprod(sim2 != 0, u != 0), "matrix"))
+dimnames(ratings) <- dimnames(newdata)
+mypred <- as.numeric(as(ratings, "matrix"))
+mypred[is.nan(mypred)] <- NA    # abnormal results
+mypred[is.infinite(mypred)] <- NA   # abnormal results
+mypred[!is.na(newdata)]<-NA   # already watched movies
+```
+
+```{r best}
+newdata.nonNA = which(!is.na(newdata))
+sim3 = item.sim.top30[,newdata.nonNA] 
+u = t(as.matrix(newdata[newdata.nonNA]))
+x = tcrossprod(sim3, u)
+y = 1/rowSums(sim3, na.rm = TRUE)
+mypreds2 = t(x * y)
+mypreds2 = as.numeric(as(mypreds2, "matrix"))
+
+mypreds2[is.nan(mypreds2)] <- NA    # abnormal results
+mypreds2[is.infinite(mypreds2)] <- NA   # abnormal results
+mypreds2[!is.na(newdata)]<-NA   # already watched movies
+mypred = mypreds2
+
+```
+
+```{r eval_code1}
+recommender.IBCF <- Recommender(train, method = "IBCF",
+                                parameter = list(normalize = 'center', 
+                                                 method = 'Cosine', 
+                                                 k = 30))
+
+p.IBCF <- predict(recommender.IBCF, test, type="ratings")
+p.IBCF <- as.numeric(as(p.IBCF, "matrix"))
+
+```
+
+```{r eval_code2}
+
+## first output: should be less than 10
+sum(is.na(p.IBCF) != is.na(mypred))  
+
+## second output: should be less than 10%
+mydiff = abs(p.IBCF - mypred)
+sum(mydiff[!is.na(mydiff)] > 1e-6) / sum(!is.na(mydiff)) 
+```
+

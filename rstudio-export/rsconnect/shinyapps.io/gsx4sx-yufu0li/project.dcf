@@ -1,0 +1,14 @@
+name: project
+title: project
+username:
+account: gsx4sx-yufu0li
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 7873253
+bundleId: 6656552
+url: https://gsx4sx-yufu0li.shinyapps.io/project/
+when: 1671515697.42398
+lastSyncTime: 1671515697.424
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: pop_recom.data|pop.recom.RData
